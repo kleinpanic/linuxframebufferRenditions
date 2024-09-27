@@ -1,0 +1,114 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <linux/fb.h>
+#include <math.h>
+#include <stdint.h>
+
+// Cube parameters
+#define COLOR 0xFFFFFF // White for 32-bit or RGB565 for 16-bit
+
+// Structure for framebuffer info
+struct framebuffer_info {
+    int fb_fd;
+    uint8_t* fb_ptr;
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+    long int screensize;
+};
+
+// Function to initialize framebuffer
+struct framebuffer_info init_framebuffer(const char* fb_path) {
+    struct framebuffer_info fb_info;
+    
+    fb_info.fb_fd = open(fb_path, O_RDWR);
+    if (fb_info.fb_fd == -1) {
+        perror("Error opening framebuffer device");
+        exit(1);
+    }
+
+    // Get fixed screen information
+    if (ioctl(fb_info.fb_fd, FBIOGET_FSCREENINFO, &fb_info.finfo)) {
+        perror("Error reading fixed information");
+        exit(1);
+    }
+
+    // Get variable screen information
+    if (ioctl(fb_info.fb_fd, FBIOGET_VSCREENINFO, &fb_info.vinfo)) {
+        perror("Error reading variable information");
+        exit(1);
+    }
+
+    // Calculate the screen size in bytes
+    fb_info.screensize = fb_info.vinfo.yres_virtual * fb_info.finfo.line_length;
+
+    // Map framebuffer to memory
+    fb_info.fb_ptr = (uint8_t*)mmap(0, fb_info.screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fb_info.fb_fd, 0);
+    if ((intptr_t)fb_info.fb_ptr == -1) {
+        perror("Error mapping framebuffer to memory");
+        exit(1);
+    }
+
+    // Debugging: print framebuffer info
+    printf("Framebuffer resolution: %dx%d, %d bpp\n", fb_info.vinfo.xres, fb_info.vinfo.yres, fb_info.vinfo.bits_per_pixel);
+    printf("Framebuffer screensize: %ld bytes\n", fb_info.screensize);
+
+    return fb_info;
+}
+
+// Function to clear the screen
+void clear_screen(struct framebuffer_info* fb_info) {
+    for (int i = 0; i < fb_info->screensize; i++) {
+        fb_info->fb_ptr[i] = 0;  // Set each pixel to black
+    }
+}
+
+// Function to set a pixel in the framebuffer
+void set_pixel(struct framebuffer_info* fb_info, int x, int y, uint32_t color) {
+    if (x >= 0 && x < fb_info->vinfo.xres && y >= 0 && y < fb_info->vinfo.yres) {
+        long location = (x + fb_info->vinfo.xoffset) * (fb_info->vinfo.bits_per_pixel / 8) +
+                        (y + fb_info->vinfo.yoffset) * fb_info->finfo.line_length;
+
+        // Handle different bits per pixel
+        if (fb_info->vinfo.bits_per_pixel == 32) {
+            // 32-bit color (ARGB or XRGB)
+            *((uint32_t*)(fb_info->fb_ptr + location)) = color;
+        } else if (fb_info->vinfo.bits_per_pixel == 16) {
+            // 16-bit color (RGB565)
+            uint16_t rgb565 = ((color & 0xF80000) >> 8) | ((color & 0x00FC00) >> 5) | ((color & 0x0000F8) >> 3);
+            *((uint16_t*)(fb_info->fb_ptr + location)) = rgb565;
+        } else {
+            printf("Unsupported bits per pixel: %d\n", fb_info->vinfo.bits_per_pixel);
+        }
+    }
+}
+
+// Main function
+int main() {
+    // Initialize framebuffer
+    struct framebuffer_info fb_info = init_framebuffer("/dev/fb0");
+
+    // Clear the screen first
+    clear_screen(&fb_info);
+
+    // Draw a pixel at the center of the screen to test framebuffer access
+    int center_x = fb_info.vinfo.xres / 2;
+    int center_y = fb_info.vinfo.yres / 2;
+    printf("Drawing pixel at center: (%d, %d)\n", center_x, center_y);
+
+    // Use appropriate color depth
+    set_pixel(&fb_info, center_x, center_y, COLOR);  // Draw white pixel at the center
+
+    // Hold for a while to inspect
+    printf("Framebuffer test complete. Pixel drawn at the center.\n");
+    sleep(10);  // Wait for 10 seconds to allow visual inspection
+
+    // Unmap and close the framebuffer
+    munmap(fb_info.fb_ptr, fb_info.screensize);
+    close(fb_info.fb_fd);
+
+    return 0;
+}
+
